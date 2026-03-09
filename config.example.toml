@@ -18,3 +18,7 @@ custom = []   # Add your own domains here
 
 [database]
 path = "dns_sentinel.db"
+
+[scoring]
+groq_api_key = ""               # Optional. Leave empty to use offline rules only.
+groq_model   = "llama-3.1-8b-instant"  # Fast + free. See GROQ_SETUP.md.
