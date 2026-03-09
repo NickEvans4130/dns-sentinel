@@ -5,7 +5,7 @@ upstream_dns = "1.1.1.1"
 upstream_port = 53
 
 [discord]
-webhook_url = "YOUR_DISCORD_WEBHOOK_URL_HERE"
+webhook_url = "https://discord.com/api/webhooks/1480683410203869347/t7aHTtdig86jM2i5qgN4A66ryBk-n-BLy1V10Hbl8PnFDXOexLNf6mL1EJFJPCoCNzjc"
 alert_mode = "realtime"   # "realtime" | "hourly" | "daily"
 batch_interval_minutes = 60
 

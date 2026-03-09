@@ -31,6 +31,16 @@ CREATE TABLE IF NOT EXISTS daily_stats (
     top_blocked      TEXT
 );
 
+CREATE TABLE IF NOT EXISTS domain_scores (
+    domain      TEXT PRIMARY KEY,
+    score       INTEGER NOT NULL,
+    category    TEXT    NOT NULL,
+    company     TEXT,
+    reason      TEXT    NOT NULL,
+    source      TEXT    NOT NULL,
+    scored_at   TEXT    NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_queries_timestamp ON queries(timestamp);
 CREATE INDEX IF NOT EXISTS idx_queries_domain    ON queries(domain);
 CREATE INDEX IF NOT EXISTS idx_queries_blocked   ON queries(blocked);
@@ -131,6 +141,111 @@ class QueryLogger:
             "allowed": total - blocked,
             "block_rate": block_rate,
             "top_domains": top_domains,
+        }
+
+    def get_score(self, domain: str) -> dict | None:
+        """
+        Return the cached threat score for a domain, or None if not yet scored.
+
+        Args:
+            domain: The domain name to look up.
+
+        Returns:
+            Score dict with keys (score, category, company, reason, source),
+            or None if no cached entry exists.
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT score, category, company, reason, source "
+                "FROM domain_scores WHERE domain = ?",
+                (domain.lower(),),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "score": row["score"],
+            "category": row["category"],
+            "company": row["company"],
+            "reason": row["reason"],
+            "source": row["source"],
+        }
+
+    def cache_score(self, domain: str, score_data: dict) -> None:
+        """
+        Persist a threat score result for a domain.
+
+        Uses INSERT OR REPLACE so repeated calls safely update stale entries.
+
+        Args:
+            domain:     The domain name being scored.
+            score_data: Dict with keys: score, category, company, reason, source.
+        """
+        ts = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO domain_scores "
+                "(domain, score, category, company, reason, source, scored_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    domain.lower(),
+                    int(score_data["score"]),
+                    score_data["category"],
+                    score_data.get("company"),
+                    score_data["reason"],
+                    score_data["source"],
+                    ts,
+                ),
+            )
+
+    def get_score_stats(self, since: datetime) -> dict:
+        """
+        Return score distribution and per-domain average scores for blocked queries.
+
+        Args:
+            since: Only include queries at or after this timestamp.
+
+        Returns:
+            Dict with keys: avg_score, low, medium, high, critical, top_domains.
+            top_domains is a list of dicts with keys: domain, count, avg_score.
+        """
+        since_str = since.isoformat()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT ROUND(AVG(ds.score), 1) AS avg_score, "
+                "SUM(CASE WHEN ds.score BETWEEN 1 AND 3 THEN 1 ELSE 0 END) AS low, "
+                "SUM(CASE WHEN ds.score BETWEEN 4 AND 6 THEN 1 ELSE 0 END) AS medium, "
+                "SUM(CASE WHEN ds.score BETWEEN 7 AND 8 THEN 1 ELSE 0 END) AS high, "
+                "SUM(CASE WHEN ds.score BETWEEN 9 AND 10 THEN 1 ELSE 0 END) AS critical "
+                "FROM queries q "
+                "LEFT JOIN domain_scores ds ON q.domain = ds.domain "
+                "WHERE q.timestamp >= ? AND q.blocked = 1",
+                (since_str,),
+            ).fetchone()
+
+            top = conn.execute(
+                "SELECT q.domain, COUNT(*) AS cnt, "
+                "ROUND(AVG(ds.score), 1) AS avg_score "
+                "FROM queries q "
+                "LEFT JOIN domain_scores ds ON q.domain = ds.domain "
+                "WHERE q.timestamp >= ? AND q.blocked = 1 "
+                "GROUP BY q.domain ORDER BY cnt DESC LIMIT 10",
+                (since_str,),
+            ).fetchall()
+
+        return {
+            "avg_score": float(row["avg_score"] or 0),
+            "low": int(row["low"] or 0),
+            "medium": int(row["medium"] or 0),
+            "high": int(row["high"] or 0),
+            "critical": int(row["critical"] or 0),
+            "top_domains": [
+                {
+                    "domain": r["domain"],
+                    "count": r["cnt"],
+                    "avg_score": r["avg_score"],
+                }
+                for r in top
+            ],
         }
 
     def get_hourly_breakdown(self, date: str) -> list[dict]:
