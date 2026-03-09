@@ -1,0 +1,4 @@
+dnslib>=0.9.23
+requests>=2.31.0
+tomli>=2.0.1; python_version < "3.11"
+schedule>=1.2.0
