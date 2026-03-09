@@ -1,0 +1,16 @@
+[Unit]
+Description=DNS Sentinel - Privacy-aware DNS blocker with Discord alerts
+After=network.target
+
+[Service]
+Type=simple
+User=dns-sentinel
+WorkingDirectory=/opt/dns-sentinel
+ExecStart=/opt/dns-sentinel/venv/bin/python -m dns_sentinel.server
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
