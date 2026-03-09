@@ -82,12 +82,13 @@ def print_report(period: str, db_path: str) -> None:
     since, label = _period_since(period)
     ql = QueryLogger(db_path)
     stats = ql.get_stats(since)
+    score_stats = ql.get_score_stats(since)
 
     total = stats["total"]
     blocked = stats["blocked"]
     allowed = stats["allowed"]
     rate = stats["block_rate"]
-    top = stats["top_domains"]
+    top = score_stats["top_domains"]  # includes avg_score per domain
 
     sep = "=" * 50
 
@@ -104,7 +105,12 @@ def print_report(period: str, db_path: str) -> None:
         max_count = top[0]["count"]
         for i, entry in enumerate(top, 1):
             bar = _bar(entry["count"], max_count)
-            print(f"  {i:>2}. {entry['domain']:<40} {entry['count']:>6}  {bar}")
+            avg = entry.get("avg_score")
+            avg_str = f"{avg:>4}" if avg is not None else "  —  "
+            print(
+                f"  {i:>2}. {entry['domain']:<40} {entry['count']:>6}"
+                f"  score {avg_str}  {bar}"
+            )
 
     if period in ("today", "yesterday"):
         date_str = since.strftime("%Y-%m-%d")
@@ -116,6 +122,22 @@ def print_report(period: str, db_path: str) -> None:
                 if h["blocked_count"] > 0:
                     bar = _bar(h["blocked_count"], max_h)
                     print(f"  {h['hour']:>02d}:00  {bar}  {h['blocked_count']}")
+
+    # Score distribution
+    low = score_stats["low"]
+    medium = score_stats["medium"]
+    high = score_stats["high"]
+    critical = score_stats["critical"]
+    avg_score = score_stats["avg_score"]
+    scored_total = low + medium + high + critical
+
+    if scored_total > 0:
+        print(f"\n  Score distribution:")
+        max_band = max(low, medium, high, critical, 1)
+        print(f"  🟢 Low      (1-3) : {low:>6}  {_bar(low, max_band)}")
+        print(f"  🟡 Medium   (4-6) : {medium:>6}  {_bar(medium, max_band)}")
+        print(f"  🔴 High     (7-8) : {high:>6}  {_bar(high, max_band)}")
+        print(f"  ☠️  Critical (9-10): {critical:>6}  {_bar(critical, max_band)}")
 
     print(f"\n{sep}")
     print("  Blog / LinkedIn snippet:")
@@ -131,6 +153,8 @@ def print_report(period: str, db_path: str) -> None:
         f"  {allowed:,} legitimate requests\n"
         f"  {blocked:,} tracker requests blocked ({rate}%)\n"
     )
+    if avg_score:
+        snippet += f"  Average threat score of blocked trackers: {avg_score}/10\n"
     if tracker_lines:
         snippet += f"\nTop trackers encountered:\n{tracker_lines}"
     snippet += (
