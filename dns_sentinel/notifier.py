@@ -18,30 +18,32 @@ import requests
 
 log = logging.getLogger(__name__)
 
-_CATEGORY_HINTS: dict[str, str] = {
-    "doubleclick": "Google Ads",
-    "googleadservices": "Google Ads",
-    "google-analytics": "Google Analytics",
-    "googlesyndication": "Google AdSense",
-    "facebook": "Facebook/Meta",
-    "fbcdn": "Facebook CDN",
-    "amazon-adsystem": "Amazon Ads",
-    "adsrvr": "The Trade Desk",
-    "scorecardresearch": "Scorecard Research",
-    "moatads": "Oracle Moat",
-    "outbrain": "Outbrain",
-    "taboola": "Taboola",
-    "criteo": "Criteo",
+_CATEGORY_LABELS: dict[str, str] = {
+    "ad_network": "Ad network",
+    "analytics": "Analytics",
+    "fingerprinting": "Fingerprinting",
+    "cross_site_tracking": "Cross-site tracking",
+    "data_broker": "Data broker",
+    "malware_c2": "Malware / C2",
+    "telemetry": "Telemetry",
+    "unknown": "Unknown",
 }
 
+_SCORE_STYLES: list[tuple[int, str, int]] = [
+    # (max_score, emoji, hex_color)
+    (3,  "🟢", 0x57F287),
+    (6,  "🟡", 0xFEE75C),
+    (8,  "🔴", 0xED4245),
+    (10, "☠️",  0x2C2F33),
+]
 
-def _guess_category(domain: str) -> str:
-    """Return a human-readable tracker category for a domain."""
-    domain_lower = domain.lower()
-    for hint, label in _CATEGORY_HINTS.items():
-        if hint in domain_lower:
-            return label
-    return "Unknown tracker"
+
+def _score_style(score: int) -> tuple[str, int]:
+    """Return (emoji, hex_color) for a numeric score 1-10."""
+    for max_score, emoji, color in _SCORE_STYLES:
+        if score <= max_score:
+            return emoji, color
+    return "☠️", 0x2C2F33
 
 
 class DiscordNotifier:
@@ -81,22 +83,28 @@ class DiscordNotifier:
             )
             self._batch_thread.start()
 
-    def notify(self, domain: str, client_ip: Optional[str] = None) -> None:
+    def notify(
+        self,
+        domain: str,
+        client_ip: Optional[str] = None,
+        score_data: Optional[dict] = None,
+    ) -> None:
         """
         Schedule a notification for a blocked domain.
 
         This method returns immediately; delivery is handled by a background thread.
 
         Args:
-            domain:    The blocked domain name.
-            client_ip: Optional client IP address (for context).
+            domain:     The blocked domain name.
+            client_ip:  Optional client IP address (for context).
+            score_data: Optional threat score dict from the Scorer.
         """
         if not self.webhook_url or self.webhook_url == "YOUR_DISCORD_WEBHOOK_URL_HERE":
             return
 
         if self.alert_mode == "realtime":
             try:
-                self._notify_queue.put_nowait(("realtime", domain, client_ip))
+                self._notify_queue.put_nowait(("realtime", domain, client_ip, score_data))
             except queue.Full:
                 log.warning("Notification queue full — dropping alert for %s", domain)
         else:
@@ -112,8 +120,8 @@ class DiscordNotifier:
         while not self._stop_event.is_set():
             try:
                 item = self._notify_queue.get(timeout=1.0)
-                mode, domain, client_ip = item
-                self._send_realtime(domain, client_ip)
+                mode, domain, client_ip, score_data = item
+                self._send_realtime(domain, client_ip, score_data)
                 self._notify_queue.task_done()
             except queue.Empty:
                 continue
@@ -162,26 +170,62 @@ class DiscordNotifier:
         }
         self._post_webhook(payload)
 
-    def _send_realtime(self, domain: str, client_ip: Optional[str]) -> None:
-        """Build and send a realtime block embed."""
-        now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
-        category = _guess_category(domain)
+    def _send_realtime(
+        self,
+        domain: str,
+        client_ip: Optional[str],
+        score_data: Optional[dict],
+    ) -> None:
+        """Build and send a realtime block embed, enriched with score data if available."""
+        ts = datetime.now(timezone.utc).isoformat()
 
-        description = f"`{domain}`\n*{category}*\nBlocked at {now}"
-        if client_ip:
-            description += f"\nClient: `{client_ip}`"
+        if score_data:
+            score = int(score_data.get("score", 5))
+            category_key = score_data.get("category", "unknown")
+            company = score_data.get("company")
+            reason = score_data.get("reason", "")
+            source = score_data.get("source", "rules")
 
-        payload = {
-            "embeds": [
+            emoji, color = _score_style(score)
+            category_label = _CATEGORY_LABELS.get(category_key, category_key.replace("_", " ").title())
+            source_label = "ai-classified" if source == "llm" else "rules"
+
+            fields = [
+                {"name": "Domain", "value": f"`{domain}`", "inline": True},
                 {
-                    "title": "Tracker Blocked",
-                    "description": description,
-                    "color": 0xFF4444,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
+                    "name": "Score",
+                    "value": f"{emoji} {score}/10 — {category_label}",
+                    "inline": True,
+                },
             ]
-        }
-        self._post_webhook(payload)
+            if company:
+                fields.append({"name": "Company", "value": company, "inline": True})
+            if reason:
+                fields.append({"name": "Why", "value": reason, "inline": False})
+            fields.append({"name": "Source", "value": source_label, "inline": True})
+            if client_ip:
+                fields.append({"name": "Client", "value": f"`{client_ip}`", "inline": True})
+
+            embed: dict = {
+                "title": "🚫 Tracker Blocked",
+                "color": color,
+                "fields": fields,
+                "timestamp": ts,
+            }
+        else:
+            # Fallback: plain embed when no score data is available
+            now = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+            description = f"`{domain}`\nBlocked at {now}"
+            if client_ip:
+                description += f"\nClient: `{client_ip}`"
+            embed = {
+                "title": "🚫 Tracker Blocked",
+                "description": description,
+                "color": 0xFF4444,
+                "timestamp": ts,
+            }
+
+        self._post_webhook({"embeds": [embed]})
 
     def _post_webhook(self, payload: dict, retry: bool = True) -> None:
         """
