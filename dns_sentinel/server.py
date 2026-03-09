@@ -23,6 +23,7 @@ from dnslib.server import DNSLogger as DnsLibLogger
 from .blocklist import BlocklistLoader
 from .logger import QueryLogger
 from .notifier import DiscordNotifier
+from .scorer import Scorer
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +38,7 @@ class SentinelResolver(BaseResolver):
         blocklist: BlocklistLoader,
         db_logger: QueryLogger,
         notifier: DiscordNotifier,
+        scorer: Scorer,
         upstream_host: str,
         upstream_port: int,
     ) -> None:
@@ -47,12 +49,14 @@ class SentinelResolver(BaseResolver):
             blocklist:     Loaded BlocklistLoader instance.
             db_logger:     QueryLogger for persisting query records.
             notifier:      DiscordNotifier for sending block alerts.
+            scorer:        Scorer for computing domain threat scores.
             upstream_host: IP of the upstream DNS resolver.
             upstream_port: Port of the upstream DNS resolver.
         """
         self.blocklist = blocklist
         self.db_logger = db_logger
         self.notifier = notifier
+        self.scorer = scorer
         self.upstream_host = upstream_host
         self.upstream_port = upstream_port
 
@@ -97,13 +101,15 @@ class SentinelResolver(BaseResolver):
     def _record_async(
         self, domain: str, client_ip: Optional[str], blocked: bool
     ) -> None:
-        """Log and notify in a background thread to keep the DNS hot path fast."""
+        """Log, score, and notify in a background thread to keep the DNS hot path fast."""
 
         def _work() -> None:
             try:
                 self.db_logger.log_query(domain, client_ip, blocked)
                 if blocked:
-                    self.notifier.notify(domain, client_ip)
+                    sources = self.blocklist.get_sources(domain)
+                    score_data = self.scorer.score(domain, blocklist_sources=sources)
+                    self.notifier.notify(domain, client_ip, score_data=score_data)
             except Exception as exc:
                 log.error("Background record error: %s", exc)
 
@@ -129,11 +135,13 @@ class SentinelServer:
         self.blocklist = BlocklistLoader(config["blocklist"])
         self.db_logger = QueryLogger(config["database"]["path"])
         self.notifier = DiscordNotifier(config["discord"], db_logger=self.db_logger)
+        self.scorer = Scorer(config, self.db_logger)
 
         self.resolver = SentinelResolver(
             blocklist=self.blocklist,
             db_logger=self.db_logger,
             notifier=self.notifier,
+            scorer=self.scorer,
             upstream_host=dns_cfg.get("upstream_dns", "1.1.1.1"),
             upstream_port=int(dns_cfg.get("upstream_port", 53)),
         )
