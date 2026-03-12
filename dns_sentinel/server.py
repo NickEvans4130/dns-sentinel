@@ -14,6 +14,7 @@ import signal
 import socket
 import sys
 import threading
+from datetime import datetime, timezone
 from typing import Optional
 
 from dnslib import DNSRecord, RCODE
@@ -128,6 +129,9 @@ class SentinelServer:
         Args:
             config: Full application config (all sections).
         """
+        self._config = config
+        self.start_time = datetime.now(timezone.utc)
+
         dns_cfg = config["dns"]
         self.host: str = dns_cfg.get("listen_host", "0.0.0.0")
         self.port: int = int(dns_cfg.get("listen_port", 5353))
@@ -167,6 +171,8 @@ class SentinelServer:
         log.info("DNS Sentinel listening on %s:%d", self.host, self.port)
         self._dns_server.start_thread()
 
+        self._start_bot()
+
         # Block the main thread until a signal arrives
         try:
             signal.pause()
@@ -175,6 +181,38 @@ class SentinelServer:
             import time
             while True:
                 time.sleep(1)
+
+    def _start_bot(self) -> None:
+        """Start the Discord bot in a background thread if configured and enabled."""
+        bot_cfg = self._config.get("bot", {})
+        if not bot_cfg.get("enabled", False):
+            return
+
+        token = bot_cfg.get("token", "")
+        if not token or token == "YOUR_DISCORD_BOT_TOKEN_HERE":
+            log.warning("Discord bot enabled but no token configured — skipping")
+            return
+
+        try:
+            from .bot import SentinelBot, run_bot
+
+            bot = SentinelBot(
+                config=self._config,
+                db_logger=self.db_logger,
+                scorer=self.scorer,
+                blocklist=self.blocklist,
+                start_time=self.start_time,
+            )
+            bot_thread = threading.Thread(
+                target=run_bot,
+                args=(bot, token),
+                daemon=True,
+                name="discord-bot",
+            )
+            bot_thread.start()
+            log.info("Discord bot thread started")
+        except Exception as exc:
+            log.error("Failed to start Discord bot: %s", exc)
 
     def stop(self) -> None:
         """Gracefully stop the server and background threads."""
