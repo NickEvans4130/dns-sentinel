@@ -22,3 +22,10 @@ path = "dns_sentinel.db"
 [scoring]
 groq_api_key = ""               # Optional. Leave empty to use offline rules only.
 groq_model   = "llama-3.1-8b-instant"  # Fast + free. See GROQ_SETUP.md.
+
+[bot]
+enabled              = true
+token                = "YOUR_DISCORD_BOT_TOKEN_HERE"
+guild_id             = 123456789   # Right-click your server → Copy Server ID
+allowed_channel_ids  = []          # Empty = any channel. List of int IDs to restrict.
+allowed_role_ids     = []          # Empty = any user. List of int IDs to restrict.
